@@ -1,114 +1,113 @@
-from __future__ import print_function
-import numpy as np
 import tensorflow as tf
-
+from tensorflow.python.ops import rnn_cell
 import argparse
 import time
 import os
-from six.moves import cPickle
 
+import charrnn
 from utils import TextLoader
-from model import Model
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--data_dir', type=str, default='data/tinyshakespeare',
-                       help='data directory containing input.txt')
-    parser.add_argument('--save_dir', type=str, default='save',
-                       help='directory to store checkpointed models')
-    parser.add_argument('--rnn_size', type=int, default=128,
-                       help='size of RNN hidden state')
-    parser.add_argument('--num_layers', type=int, default=2,
-                       help='number of layers in the RNN')
-    parser.add_argument('--model', type=str, default='lstm',
-                       help='rnn, gru, or lstm')
-    parser.add_argument('--batch_size', type=int, default=50,
-                       help='minibatch size')
-    parser.add_argument('--seq_length', type=int, default=50,
-                       help='RNN sequence length')
-    parser.add_argument('--num_epochs', type=int, default=50,
-                       help='number of epochs')
-    parser.add_argument('--save_every', type=int, default=1000,
-                       help='save frequency')
-    parser.add_argument('--grad_clip', type=float, default=5.,
-                       help='clip gradients at this value')
-    parser.add_argument('--learning_rate', type=float, default=0.002,
-                       help='learning rate')
-    parser.add_argument('--decay_rate', type=float, default=0.97,
-                       help='decay rate for rmsprop')                       
-    parser.add_argument('--init_from', type=str, default=None,
-                       help="""continue training from saved model at this path. Path must contain files saved by previous training process: 
-                            'config.pkl'        : configuration;
-                            'chars_vocab.pkl'   : vocabulary definitions;
-                            'checkpoint'        : paths to model file(s) (created by tf).
-                                                  Note: this file contains absolute paths, be careful when moving files around;
-                            'model.ckpt-*'      : file(s) with model definition (created by tf)
-                        """)
-    args = parser.parse_args()
-    train(args)
+def main(_):
+  parser = argparse.ArgumentParser()
+  parser.add_argument('--data_dir', type=str, default='data/tinyshakespeare',
+                     help='data directory containing input.txt')
+  parser.add_argument('--save_dir', type=str, default='save',
+                     help='directory to store checkpointed models')
+  parser.add_argument('--rnn_size', type=int, default=128,
+                     help='size of RNN hidden state')
+  parser.add_argument('--num_layers', type=int, default=2,
+                     help='number of layers in the RNN')
+  parser.add_argument('--model', type=str, default='lstm',
+                     help='rnn, gru, or lstm')
+  parser.add_argument('--batch_size', type=int, default=50,
+                     help='minibatch size')
+  parser.add_argument('--seq_length', type=int, default=50,
+                     help='RNN sequence length')
+  parser.add_argument('--num_epochs', type=int, default=50,
+                     help='number of epochs')
+  parser.add_argument('--save_every', type=int, default=1000,
+                     help='save frequency')
+  parser.add_argument('--grad_clip', type=float, default=5.,
+                     help='clip gradients at this value')
+  parser.add_argument('--learning_rate', type=float, default=0.002,
+                     help='learning rate')
+  parser.add_argument('--decay_rate', type=float, default=0.97,
+                     help='decay rate for rmsprop')                       
+  parser.add_argument('--init_from', type=str, default=None,
+                     help="""continue training from saved model at this path. Path must contain files saved by previous training process: 
+                          'config.pkl'        : configuration;
+                          'chars_vocab.pkl'   : vocabulary definitions;
+                          'checkpoint'        : paths to model file(s) (created by tf).
+                                                Note: this file contains absolute paths, be careful when moving files around;
+                          'model.ckpt-*'      : file(s) with model definition (created by tf)
+                      """)
+  args, _ = parser.parse_known_args()
+  run_training(args)
 
-def train(args):
-    data_loader = TextLoader(args.data_dir, args.batch_size, args.seq_length)
-    args.vocab_size = data_loader.vocab_size
-    
-    # check compatibility if training is continued from previously saved model
-    if args.init_from is not None:
-        # check if all necessary files exist 
-        assert os.path.isdir(args.init_from)," %s must be a a path" % args.init_from
-        assert os.path.isfile(os.path.join(args.init_from,"config.pkl")),"config.pkl file does not exist in path %s"%args.init_from
-        assert os.path.isfile(os.path.join(args.init_from,"chars_vocab.pkl")),"chars_vocab.pkl.pkl file does not exist in path %s" % args.init_from
-        ckpt = tf.train.get_checkpoint_state(args.init_from)
-        assert ckpt,"No checkpoint found"
-        assert ckpt.model_checkpoint_path,"No model path found in checkpoint"
+def run_training(args):
+  data_dir = args.data_dir
+  batch_size = args.batch_size
+  seq_length = args.seq_length
+  rnn_size = args.rnn_size
+  num_layers = args.num_layers
+  grad_clip = args.grad_clip
+  num_epochs = args.num_epochs
+  initial_learning_rate = args.learning_rate
+  decay_rate = args.decay_rate
+  init_from = args.init_from
+  save_every = args.save_every
+  save_dir = args.save_dir
 
-        # open old config and check if models are compatible
-        with open(os.path.join(args.init_from, 'config.pkl')) as f:
-            saved_model_args = cPickle.load(f)
-        need_be_same=["model","rnn_size","num_layers","seq_length"]
-        for checkme in need_be_same:
-            assert vars(saved_model_args)[checkme]==vars(args)[checkme],"Command line argument and saved model disagree on '%s' "%checkme
-        
-        # open saved vocab/dict and check if vocabs/dicts are compatible
-        with open(os.path.join(args.init_from, 'chars_vocab.pkl')) as f:
-            saved_chars, saved_vocab = cPickle.load(f)
-        assert saved_chars==data_loader.chars, "Data and loaded model disagree on character set!"
-        assert saved_vocab==data_loader.vocab, "Data and loaded model disagree on dictionary mappings!"
-        
-    with open(os.path.join(args.save_dir, 'config.pkl'), 'wb') as f:
-        cPickle.dump(args, f)
-    with open(os.path.join(args.save_dir, 'chars_vocab.pkl'), 'wb') as f:
-        cPickle.dump((data_loader.chars, data_loader.vocab), f)
-        
-    model = Model(args)
+  data_loader = TextLoader(data_dir, batch_size, seq_length)
 
-    with tf.Session() as sess:
-        tf.initialize_all_variables().run()
-        saver = tf.train.Saver(tf.all_variables())
-        # restore model
-        if args.init_from is not None:
-            saver.restore(sess, ckpt.model_checkpoint_path)
-        for e in range(args.num_epochs):
-            sess.run(tf.assign(model.lr, args.learning_rate * (args.decay_rate ** e)))
-            data_loader.reset_batch_pointer()
-            state = sess.run(model.initial_state)
-            for b in range(data_loader.num_batches):
-                start = time.time()
-                x, y = data_loader.next_batch()
-                feed = {model.input_data: x, model.targets: y}
-                for i, (c, h) in enumerate(model.initial_state):
-                    feed[c] = state[i].c
-                    feed[h] = state[i].h
-                train_loss, state, _ = sess.run([model.cost, model.final_state, model.train_op], feed)
-                end = time.time()
-                print("{}/{} (epoch {}), train_loss = {:.3f}, time/batch = {:.3f}" \
-                    .format(e * data_loader.num_batches + b,
-                            args.num_epochs * data_loader.num_batches,
-                            e, train_loss, end - start))
-                if (e * data_loader.num_batches + b) % args.save_every == 0\
-                    or (e==args.num_epochs-1 and b == data_loader.num_batches-1): # save for the last result
-                    checkpoint_path = os.path.join(args.save_dir, 'model.ckpt')
-                    saver.save(sess, checkpoint_path, global_step = e * data_loader.num_batches + b)
-                    print("model saved to {}".format(checkpoint_path))
+  vocab_size = data_loader.vocab_size
+
+  input_placeholder = tf.placeholder(tf.int32, [batch_size, seq_length])
+  targets_placeholder = tf.placeholder(tf.int32, [batch_size, seq_length])
+
+  cell = rnn_cell.BasicLSTMCell(rnn_size, state_is_tuple=True)
+  cell = rnn_cell.MultiRNNCell([cell] * num_layers, state_is_tuple=True)
+
+  initial_state = cell.zero_state(batch_size, tf.float32)
+
+  logits, last_state = charrnn.inference(input_placeholder, initial_state, cell, rnn_size, vocab_size, seq_length, False)
+
+  loss = charrnn.loss(logits, targets_placeholder, batch_size, seq_length, vocab_size)
+
+  learning_rate = tf.Variable(0.0, trainable=False)
+
+  train_op, cost = charrnn.training(loss, learning_rate, batch_size, seq_length, grad_clip)
+
+  init = tf.initialize_all_variables()
+
+  saver = tf.train.Saver(tf.all_variables())
+
+  sess = tf.Session()
+
+  sess.run(init)
+
+  for e in range(num_epochs):
+    sess.run(tf.assign(learning_rate, initial_learning_rate * (decay_rate ** e)))
+    state = sess.run(initial_state)
+    data_loader.reset_batch_pointer()
+    for b in range(data_loader.num_batches):
+      start = time.time()
+      x, y = data_loader.next_batch()
+      feed = {input_placeholder: x, targets_placeholder: y}
+      for i, (c, h) in enumerate(initial_state):
+        feed[c] = state[i].c
+        feed[h] = state[i].h
+      train_loss, state, _ = sess.run([cost, last_state, train_op], feed)
+      end = time.time()
+      print("{}/{} (epoch {}), train_loss = {:.3f}, time/batch = {:.3f}" \
+        .format(e * data_loader.num_batches + b,
+                num_epochs * data_loader.num_batches,
+                e, train_loss, end - start))
+      if (e * data_loader.num_batches + b) % args.save_every == 0\
+          or (e==args.num_epochs-1 and b == data_loader.num_batches-1): # save for the last result
+          checkpoint_path = os.path.join(save_dir, 'model.ckpt')
+          saver.save(sess, checkpoint_path, global_step = e * data_loader.num_batches + b)
+          print("model saved to {}".format(checkpoint_path))
 
 if __name__ == '__main__':
-    main()
+  tf.app.run(main)
