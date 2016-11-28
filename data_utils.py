@@ -2,6 +2,7 @@ import gzip
 import os
 import re
 import tarfile
+import numpy as np
 
 from tensorflow.python.platform import gfile
 import tensorflow as tf
@@ -90,7 +91,7 @@ def data_to_token_ids(data_path, target_path, vocabulary_path, tokenizer=None, n
           tokens_file.write(" ".join([str(tok) for tok in token_ids]) + "\n")
 
 def prepare(data_dir, vocabulary_size, tokenizer=None):
-  path = os.path.join(data_dir, "development/newsdev2014.txt")
+  path = os.path.join(data_dir, "development/newstest2013.txt")
 
   # Create vocabularies of the appropriate sizes.
   vocab_path = os.path.join(data_dir, "development/vocab%d.txt" % vocabulary_size)
@@ -101,3 +102,41 @@ def prepare(data_dir, vocabulary_size, tokenizer=None):
   data_to_token_ids(path, ids_path, vocab_path, tokenizer)
 
   return (ids_path, vocab_path)
+
+def read_data(input_path, batch_size):
+  data_set = []
+  max_seq_length = 0
+  with tf.gfile.GFile(input_path, mode="r") as input_file:
+    inputs = input_file.readline()
+    counter = 0
+    while inputs:
+      counter += 1
+      if counter % 100000 == 0:
+        print("  reading data line %d" % counter)
+        sys.stdout.flush()
+      ids = [int(x) for x in inputs.split()]
+      source_ids = [GO_ID] + ids
+      target_ids = ids + [EOS_ID]
+      data_set.append([source_ids, target_ids])
+      max_seq_length = max(max_seq_length, len(ids) + 1)
+      inputs = input_file.readline()
+  num_batches = int(len(data_set) / batch_size)
+  data_set = data_set[:num_batches * batch_size]
+  return (data_set, num_batches, max_seq_length)
+
+def get_batch(data_set, batch_idx, batch_size, seq_length):
+  x_list, y_list = [], []
+
+  batch_data = data_set[batch_idx * batch_size:batch_idx * batch_size + batch_size]
+  for i in range(batch_size):
+    x, y = batch_data[i]
+
+    x_pad = [PAD_ID] * (seq_length - len(x))
+    x_list.append(x + x_pad)
+
+    y_pad = [PAD_ID] * (seq_length - len(y))
+    y_list.append(y + y_pad)
+
+  batch_x, batch_y = [], []
+
+  return (np.array(x_list, dtype=np.int32), np.array(y_list, dtype=np.int32))
